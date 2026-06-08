@@ -30,21 +30,57 @@
 > python gradio_app.py --enable_t23d --port 8080
 > ```
 >
-> ### 🤖 Autonomous Asset Factory (local-LLM + vision-QA loop)
+> ### 🤖 Autonomous Asset Factory (local-LLM + vision-QA feedback loop)
 >
-> Open the **"🤖 Autonomous Asset Factory"** panel at the bottom of the web UI to continuously generate game assets hands-free:
-> 1. **You** describe the game's setting/aesthetic (and optionally asset types).
-> 2. A **local LLM** (via [Ollama](https://ollama.com)) writes detailed, paragraph-length prompts for distinct, on-theme assets.
-> 3. **Hunyuan3D** generates each asset (text → image → shape → texture).
-> 4. A **local vision model** renders the result from 4 angles and grades it 0–10.
-> 5. Assets **at/above your threshold are saved** to `autonomous_assets/<run>/` (named `<asset>.glb` + prompt + QA report + contact sheet). Below-threshold assets have the critique **fed back to refine the prompt and retry**.
+> A closed-loop, hands-free asset generator built into this fork. You describe a game's world once; it then **keeps producing on-theme, quality-checked 3D assets on its own** — using only **local models** (no cloud, no API keys).
 >
-> Requires [Ollama](https://ollama.com) running locally with a chat model (e.g. `qwen2.5:14b`) and a vision model (e.g. `qwen2.5vl:7b`):
+> **The loop**
+> 1. **You** describe the game's setting / aesthetic (and optionally the asset types you want).
+> 2. A **local LLM** (via [Ollama](https://ollama.com)) writes detailed, paragraph-length, 3D-friendly prompts for distinct, on-theme assets, avoiding repeats for variety.
+> 3. **Hunyuan3D** generates each asset (text → image → shape → texture), reusing the already-loaded pipelines.
+> 4. A **local vision model** renders the finished mesh from 4 angles and grades it **0–10** with concrete issues + suggestions.
+> 5. **Approve or refine:** assets scoring **at/above your threshold are saved**; anything below has the critique **fed back to rewrite the prompt and retry** (up to your retry limit). So the prompts self-improve from visual feedback.
+>
+> **Setup** — install [Ollama](https://ollama.com) and pull one chat model and one vision model (these are good defaults; any Ollama chat/vision pair works):
 > ```
-> ollama pull qwen2.5:14b
-> ollama pull qwen2.5vl:7b
+> ollama pull qwen2.5:14b      # prompt writer
+> ollama pull qwen2.5vl:7b     # vision QA  (or qwen2.5vl:32b for stricter grading)
 > ```
-> The loop reuses the already-loaded pipelines and the built-in `custom_rasterizer` for QA renders — **no extra Python packages required**.
+> The loop reuses the already-loaded Hunyuan pipelines and the built-in `custom_rasterizer` for headless QA renders — **no extra Python packages required**.
+>
+> **Use it (web UI):** launch with `--enable_t23d`, open the **"🤖 Autonomous Asset Factory"** panel at the bottom, then:
+>
+> | Control | Meaning |
+> |---|---|
+> | **Game setting / aesthetic** | Free-text brief, e.g. *"Ghost in the Shell near-future Japanese cyberpunk, matte black & chrome, neon-noir."* |
+> | **Asset types / focus** *(optional)* | e.g. *"props, tech devices, weapons, cybernetic parts."* |
+> | **Approve target** | How many to approve before stopping (**0 = run forever**). |
+> | **Quality threshold** | Minimum vision score (0–10) to approve. ~7 is a good start. |
+> | **Max refine retries** | How many times to refine-and-retry a failing asset before moving on. |
+> | **Prompt LLM / Vision QA model** | Pick from your installed Ollama models. |
+> | **▶ Start / ■ Stop** | Stop halts cleanly after the current asset. |
+>
+> A live activity log, the latest QA contact sheet, and a gallery of approved assets update as it runs.
+>
+> **Use it (headless CLI):** same loop, no browser — handy for batch runs or pinning to a specific GPU:
+> ```bash
+> python autonomous_run.py --theme "Ghost in the Shell cyberpunk props" \
+>     --asset_types "weapons, tech devices" --count 10 --threshold 7 --retries 2
+> # options: --llm, --vision, --steps, --out, --device  (CUDA_VISIBLE_DEVICES=1 to pick a GPU)
+> ```
+>
+> **Output** — each run writes to `autonomous_assets/<theme>_<timestamp>/`:
+> ```
+> <asset>.glb           textured 3D asset, accurately named
+> <asset>.prompt.txt    the exact prompt used
+> <asset>.qa.json       vision score + issues + suggestions
+> <asset>.png           4-view QA contact sheet
+> <asset>_concept.png   the generated concept image
+> manifest.jsonl        one line per approved asset
+> rejected/             contact sheets of below-threshold attempts
+> ```
+>
+> **Tips:** raise the threshold for a stricter bar (more retries, fewer keepers); `qwen2.5vl:32b` grades more harshly than `:7b`; lower the **Target Face Number** (in Generation settings) for lighter game-ready meshes.
 >
 > Everything below is the original upstream documentation. This fork is distributed under the same [Tencent Hunyuan 3D 2.0 Community License](LICENSE); all credit for the models and core code goes to Tencent Hunyuan. Built with Tencent Hunyuan.
 >
