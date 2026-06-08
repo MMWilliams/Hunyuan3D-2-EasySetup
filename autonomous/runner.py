@@ -33,7 +33,11 @@ class AutonomousRunner:
         line = f"[{time.strftime('%H:%M:%S')}] {msg}"
         self.log_lines.append(line)
         self.log_lines = self.log_lines[-400:]
-        print("[autonomous] " + msg, flush=True)
+        # stdout on Windows is often cp1252; never let a non-ASCII char crash logging.
+        try:
+            print("[autonomous] " + msg, flush=True)
+        except UnicodeEncodeError:
+            print(("[autonomous] " + msg).encode("ascii", "replace").decode(), flush=True)
 
     def _log_text(self):
         return "\n".join(reversed(self.log_lines))
@@ -73,7 +77,7 @@ class AutonomousRunner:
         self._log(f"Theme: {theme[:120]}")
         self._log(f"LLM: {llm_model} | Vision: {vision_model} | "
                   f"threshold {threshold} | retries {max_retries} | "
-                  f"target {'∞' if target_count <= 0 else target_count}")
+                  f"target {'unlimited' if target_count <= 0 else target_count}")
         yield self._state()
 
         avoid, queue = [], []
