@@ -171,6 +171,7 @@ gradio_cache/
 # --- EasySetup fork: generated output, local inputs, logs, machine-specific scripts ---
 outputs/
 inputs/
+autonomous_assets/
 gradio_launch*.log
 gradio_launch*.err.log
 make_batch.py

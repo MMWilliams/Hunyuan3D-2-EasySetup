@@ -30,6 +30,22 @@
 > python gradio_app.py --enable_t23d --port 8080
 > ```
 >
+> ### 🤖 Autonomous Asset Factory (local-LLM + vision-QA loop)
+>
+> Open the **"🤖 Autonomous Asset Factory"** panel at the bottom of the web UI to continuously generate game assets hands-free:
+> 1. **You** describe the game's setting/aesthetic (and optionally asset types).
+> 2. A **local LLM** (via [Ollama](https://ollama.com)) writes detailed, paragraph-length prompts for distinct, on-theme assets.
+> 3. **Hunyuan3D** generates each asset (text → image → shape → texture).
+> 4. A **local vision model** renders the result from 4 angles and grades it 0–10.
+> 5. Assets **at/above your threshold are saved** to `autonomous_assets/<run>/` (named `<asset>.glb` + prompt + QA report + contact sheet). Below-threshold assets have the critique **fed back to refine the prompt and retry**.
+>
+> Requires [Ollama](https://ollama.com) running locally with a chat model (e.g. `qwen2.5:14b`) and a vision model (e.g. `qwen2.5vl:7b`):
+> ```
+> ollama pull qwen2.5:14b
+> ollama pull qwen2.5vl:7b
+> ```
+> The loop reuses the already-loaded pipelines and the built-in `custom_rasterizer` for QA renders — **no extra Python packages required**.
+>
 > Everything below is the original upstream documentation. This fork is distributed under the same [Tencent Hunyuan 3D 2.0 Community License](LICENSE); all credit for the models and core code goes to Tencent Hunyuan. Built with Tencent Hunyuan.
 >
 > ---

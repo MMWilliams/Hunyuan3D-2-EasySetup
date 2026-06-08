@@ -350,6 +350,40 @@ def shape_generation(
     )
 
 
+import threading as _threading
+
+# Serializes generation so the autonomous loop and manual studio don't hit the
+# shared pipelines at the same time.
+_AUTO_GEN_LOCK = _threading.Lock()
+
+
+def autonomous_generate(prompt, gen_params):
+    """Text prompt -> textured trimesh, reusing the already-loaded pipelines.
+    Returns (textured_mesh, concept_image, stats). Used by the autonomous loop."""
+    if not HAS_T2I:
+        raise RuntimeError("Text-to-3D is disabled. Launch with --enable_t23d.")
+    if not HAS_TEXTUREGEN:
+        raise RuntimeError("Texture generation is unavailable (custom_rasterizer not built).")
+    p = gen_params or {}
+    steps = int(p.get('steps', 30))
+    guidance = float(p.get('guidance_scale', 5.0))
+    octree = int(p.get('octree_resolution', 256))
+    num_chunks = int(p.get('num_chunks', 8000))
+    target_faces = int(p.get('target_faces', 40000))
+    with _AUTO_GEN_LOCK:
+        mesh, image, save_folder, stats, seed = _gen_shape(
+            caption=prompt, image=None,
+            steps=steps, guidance_scale=guidance, seed=0,
+            octree_resolution=octree, check_box_rembg=True,
+            num_chunks=num_chunks, randomize_seed=True,
+        )
+        mesh = face_reduce_worker(mesh, target_faces)
+        textured_mesh = texgen_worker(mesh, image)
+        if args.low_vram_mode:
+            torch.cuda.empty_cache()
+    return textured_mesh, image, stats
+
+
 def build_app():
     title = 'Hunyuan3D-2: High Resolution Textured 3D Assets Generation'
     if MV_MODE:
@@ -637,6 +671,92 @@ def build_app():
             inputs=[file_out, file_out2, file_type, reduce_face, export_texture, target_face_num],
             outputs=[html_export_mesh, file_export]
         )
+
+        # ===================== Autonomous Asset Factory =====================
+        from autonomous import ollama_client as _oc
+        from autonomous.runner import AutonomousRunner
+
+        _models = _oc.list_models()
+        _vision_choices = [m for m in _models if ('vl' in m.lower() or 'vision' in m.lower())] \
+            or ['qwen2.5vl:7b', 'qwen2.5vl:32b', 'llama3.2-vision:11b']
+        _llm_choices = [m for m in _models if m not in _vision_choices] \
+            or ['qwen2.5:14b', 'llama3.1:8b']
+
+        def _pref(choices, *prefs):
+            for p in prefs:
+                if p in choices:
+                    return p
+            return choices[0] if choices else None
+
+        _auto_runner = AutonomousRunner(out_root=os.path.join(CURRENT_DIR, 'autonomous_assets'))
+
+        with gr.Accordion('🤖 Autonomous Asset Factory  —  local-LLM prompts + vision-QA feedback loop',
+                          open=False):
+            gr.Markdown(
+                "Describe your game's setting/aesthetic and (optionally) the asset types. A local LLM writes "
+                "detailed prompts, Hunyuan3D generates each asset, and a local vision model grades every result "
+                "(0-10). Anything at/above your threshold is **saved to `autonomous_assets/<run>/`** with an "
+                "accurate filename, its prompt, a QA report, and a contact sheet. Below-threshold assets get the "
+                "critique fed back to **refine the prompt and retry**."
+                + ("" if HAS_T2I else "\n\n**⚠ Text-to-3D is disabled — relaunch with `--enable_t23d` to use this.**")
+            )
+            with gr.Row():
+                with gr.Column(scale=3):
+                    auto_theme = gr.Textbox(
+                        label='Game setting / aesthetic', lines=3,
+                        placeholder='e.g. Gritty post-apocalyptic American suburb, rusted metal, '
+                                    'overgrown weeds, muted desaturated palette, 2000s-era props.')
+                    auto_types = gr.Textbox(
+                        label='Asset types / focus (optional)', lines=1,
+                        placeholder='e.g. street props, containers, broken furniture, signage')
+                    with gr.Row():
+                        auto_count = gr.Number(label='Approve target (0 = forever)', value=10, precision=0,
+                                               minimum=0, min_width=120)
+                        auto_threshold = gr.Slider(label='Quality threshold', minimum=0, maximum=10,
+                                                   value=7, step=0.5, min_width=120)
+                        auto_retries = gr.Slider(label='Max refine retries', minimum=0, maximum=5,
+                                                 value=2, step=1, min_width=120)
+                    with gr.Row():
+                        auto_llm = gr.Dropdown(label='Prompt LLM', choices=_llm_choices,
+                                               value=_pref(_llm_choices, 'qwen2.5:14b', 'llama3.1:8b'))
+                        auto_vision = gr.Dropdown(label='Vision QA model', choices=_vision_choices,
+                                                  value=_pref(_vision_choices, 'qwen2.5vl:7b', 'qwen2.5vl:32b'))
+                    with gr.Accordion('Generation settings', open=False):
+                        with gr.Row():
+                            auto_steps = gr.Slider(label='Inference Steps', minimum=1, maximum=100,
+                                                   value=5 if 'turbo' in args.subfolder else 30, step=1)
+                            auto_guidance = gr.Number(label='Guidance Scale', value=5.0, min_width=100)
+                        with gr.Row():
+                            auto_octree = gr.Slider(label='Octree Resolution', minimum=16, maximum=512, value=256)
+                            auto_faces = gr.Slider(label='Target Face Number', minimum=2000, maximum=200000,
+                                                   value=40000, step=1000)
+                    with gr.Row():
+                        auto_start = gr.Button('▶ Start autonomous run', variant='primary')
+                        auto_stop = gr.Button('■ Stop')
+                    auto_counts = gr.JSON(label='Progress', value={})
+                with gr.Column(scale=3):
+                    auto_preview = gr.Image(label='Latest render (QA contact sheet)', height=340)
+                    auto_log = gr.Textbox(label='Activity log', lines=15, max_lines=15, autoscroll=False)
+            auto_gallery = gr.Gallery(label='Approved assets', columns=4, height=320, object_fit='contain')
+
+            def _auto_run(theme, types, count, threshold, retries, llm, vision,
+                          steps, guidance, octree, faces):
+                if not theme or not theme.strip():
+                    yield 'Please enter a game setting / aesthetic first.', [], None, {}
+                    return
+                gen_params = {'steps': steps, 'guidance_scale': guidance,
+                              'octree_resolution': octree, 'target_faces': faces, 'num_chunks': 8000}
+                for upd in _auto_runner.run(autonomous_generate, theme, types, int(count),
+                                            float(threshold), int(retries), llm, vision, gen_params):
+                    yield upd
+
+            _auto_evt = auto_start.click(
+                _auto_run,
+                inputs=[auto_theme, auto_types, auto_count, auto_threshold, auto_retries,
+                        auto_llm, auto_vision, auto_steps, auto_guidance, auto_octree, auto_faces],
+                outputs=[auto_log, auto_gallery, auto_preview, auto_counts],
+            )
+            auto_stop.click(lambda: _auto_runner.stop(), inputs=None, outputs=None)
 
     return demo
 
