@@ -172,6 +172,16 @@ gradio_cache/
 outputs/
 inputs/
 autonomous_assets/
+# launch / run logs
+uiserver*.log
+ui_fresh*.log
+*_run.log
+*_run.err.log
+autorun_check*
+# local scratch theme files and converted reference assets
+*_theme.txt
+assets/refs/
+rlbuild/
 gradio_launch*.log
 gradio_launch*.err.log
 make_batch.py

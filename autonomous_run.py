@@ -52,7 +52,8 @@ def build_generate_fn(args):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--theme', required=True)
+    ap.add_argument('--theme', default='')
+    ap.add_argument('--theme_file', default='', help='read the theme from a UTF-8 text file')
     ap.add_argument('--asset_types', default='')
     ap.add_argument('--count', type=int, default=5)
     ap.add_argument('--threshold', type=float, default=7.0)
@@ -61,11 +62,18 @@ def main():
     ap.add_argument('--vision', default='qwen2.5vl:7b')
     ap.add_argument('--steps', type=int, default=30)
     ap.add_argument('--out', default='autonomous_assets')
+    ap.add_argument('--run_dir', default='', help='save into this exact folder instead of a new one')
     ap.add_argument('--model_path', default='tencent/Hunyuan3D-2')
     ap.add_argument('--subfolder', default='hunyuan3d-dit-v2-0')
     ap.add_argument('--texgen_model_path', default='tencent/Hunyuan3D-2')
     ap.add_argument('--device', default='cuda')
     args = ap.parse_args()
+
+    if args.theme_file:
+        with open(args.theme_file, encoding='utf-8') as f:
+            args.theme = f.read().strip()
+    if not args.theme:
+        ap.error('provide --theme or --theme_file')
 
     generate = build_generate_fn(args)
     runner = AutonomousRunner(out_root=args.out)
@@ -74,7 +82,8 @@ def main():
     last = None
     for log, gallery, preview, counters in runner.run(
             generate, args.theme, args.asset_types, args.count,
-            args.threshold, args.retries, args.llm, args.vision, gen_params):
+            args.threshold, args.retries, args.llm, args.vision, gen_params,
+            run_dir=(args.run_dir or None)):
         if counters != last:
             print("   progress:", counters, flush=True)
             last = counters

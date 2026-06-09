@@ -57,14 +57,16 @@ class AutonomousRunner:
 
     # ---- main loop ------------------------------------------------------
     def run(self, generate_fn, theme, asset_types, target_count,
-            threshold, max_retries, llm_model, vision_model, gen_params):
-        """Generator yielding (log_text, gallery, preview_img, counters)."""
+            threshold, max_retries, llm_model, vision_model, gen_params, run_dir=None):
+        """Generator yielding (log_text, gallery, preview_img, counters).
+        If run_dir is given, assets are saved there (appending to any existing
+        manifest); otherwise a fresh timestamped folder is created."""
         self.stop_flag.clear()
         self.busy = True
         self.log_lines, self.approved = [], []
         self.counters = {"planned": 0, "generated": 0, "approved": 0, "rejected": 0}
 
-        run_dir = os.path.join(self.out_root, f"{pg.slugify(theme, 'run')}_{_ts()}")
+        run_dir = run_dir or os.path.join(self.out_root, f"{pg.slugify(theme, 'run')}_{_ts()}")
         rej_dir = os.path.join(run_dir, "rejected")
         os.makedirs(rej_dir, exist_ok=True)
         manifest = os.path.join(run_dir, "manifest.jsonl")

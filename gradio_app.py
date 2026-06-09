@@ -351,6 +351,8 @@ def shape_generation(
 
 
 import threading as _threading
+import scale_tools
+import console as _console
 
 # Serializes generation so the autonomous loop and manual studio don't hit the
 # shared pipelines at the same time.
@@ -425,6 +427,29 @@ def build_app():
 
     with gr.Blocks(theme=gr.themes.Base(), title='Hunyuan-3D-2.0', analytics_enabled=False, css=custom_css) as demo:
         gr.HTML(title_html)
+
+        # ===================== Console / Telemetry sidebar =====================
+        # Collapsible side panel that live-streams all logs, telemetry, progress,
+        # warnings, and tracebacks captured from stdout/stderr + Python logging.
+        _Sidebar = getattr(gr, 'Sidebar', None)
+        _console_ctx = _Sidebar(label='🖥 Console', open=False, position='right') if _Sidebar \
+            else gr.Accordion('🖥 Console / Logs', open=False)
+        with _console_ctx:
+            gr.Markdown("Live logs & telemetry — generation timings, warnings, errors. "
+                        "Auto-refreshes every 2s.")
+            with gr.Row():
+                console_autoref = gr.Checkbox(value=True, label='Auto-refresh', min_width=90)
+                console_clear = gr.Button('Clear', min_width=70)
+                console_refresh = gr.Button('Refresh', min_width=70)
+            console_box = gr.Textbox(label='', value=_console.get_text(), lines=28, max_lines=28,
+                                     autoscroll=True, interactive=False)
+            _console_timer = gr.Timer(2.0)
+
+            def _console_tick(enabled):
+                return _console.get_text() if enabled else gr.update()
+            _console_timer.tick(_console_tick, inputs=[console_autoref], outputs=[console_box])
+            console_refresh.click(lambda: _console.get_text(), outputs=[console_box])
+            console_clear.click(lambda: (_console.clear(), _console.get_text())[1], outputs=[console_box])
 
         with gr.Row():
             with gr.Column(scale=3):
@@ -758,11 +783,73 @@ def build_app():
             )
             auto_stop.click(lambda: _auto_runner.stop(), inputs=None, outputs=None)
 
+        # ===================== Resize & Scale-Compare =====================
+        with gr.Accordion('📏 Resize & Scale Reference  —  set real-world size and compare against a reference',
+                          open=False):
+            gr.Markdown(
+                "Generate a mesh first (above), then set its real-world size (longest axis, in meters) and "
+                "**preview it side-by-side with a reference** so you can judge scale. The default reference is a "
+                "~1.8 m human mannequin; upload your own `.glb` or `.fbx` to compare against anything. "
+                "**Export resized GLB** writes the asset at the chosen size.")
+            with gr.Row():
+                with gr.Column(scale=2):
+                    sc_target = gr.Number(label='Target size (m, longest axis)', value=2.0, minimum=0.01)
+                    sc_ref = gr.File(label='Scale reference (.glb / .fbx)',
+                                     value=scale_tools.DEFAULT_REF_GLB if os.path.exists(scale_tools.DEFAULT_REF_GLB) else None,
+                                     file_types=['.glb', '.fbx'])
+                    with gr.Row():
+                        sc_ref_h = gr.Number(label='Reference height (m)', value=1.8, minimum=0.01, min_width=120)
+                        sc_ref_up = gr.Dropdown(label='Reference up-axis', choices=['z', 'y', 'x'], value='z',
+                                                info="mannequin.fbx is z-up; most .glb are y-up", min_width=120)
+                    with gr.Row():
+                        sc_preview_btn = gr.Button('🔍 Preview vs reference', variant='primary')
+                        sc_export_btn = gr.Button('💾 Export resized GLB')
+                    sc_info = gr.Markdown('')
+                    sc_download = gr.DownloadButton(label='Download resized GLB', interactive=False)
+                with gr.Column(scale=3):
+                    sc_view = gr.Model3D(label='Asset (left) vs reference (right)', height=420)
+
+            def _sc_asset_path(fo, fo2):
+                # prefer textured glb, fall back to white mesh
+                for v in (fo2, fo):
+                    if v:
+                        return v.name if hasattr(v, 'name') else v
+                return None
+
+            def _sc_preview(fo, fo2, target_m, ref, ref_h, ref_up):
+                asset = _sc_asset_path(fo, fo2)
+                if not asset:
+                    raise gr.Error('Generate a mesh first (Gen Shape / Gen Textured Shape).')
+                ref_path = (ref.name if hasattr(ref, 'name') else ref) or scale_tools.DEFAULT_REF_GLB
+                out = os.path.join(gen_save_folder(), 'scale_compare.glb')
+                try:
+                    path, dims = scale_tools.build_scale_compare(asset, float(target_m), ref_path,
+                                                                 float(ref_h), ref_up, out)
+                except Exception as e:
+                    raise gr.Error(f'Scale compare failed: {e}')
+                return path, f"**Asset bounding box:** {dims[0]} × {dims[1]} × {dims[2]} m  (longest axis = {target_m} m). Reference shown at {ref_h} m."
+
+            def _sc_export(fo, fo2, target_m):
+                asset = _sc_asset_path(fo, fo2)
+                if not asset:
+                    raise gr.Error('Generate a mesh first.')
+                out = os.path.join(gen_save_folder(), f'resized_{target_m}m.glb')
+                path, dims = scale_tools.resize_export(asset, float(target_m), out)
+                return gr.update(value=path, interactive=True), f"**Exported** at {dims[0]} × {dims[1]} × {dims[2]} m → `{os.path.basename(path)}`"
+
+            sc_preview_btn.click(_sc_preview,
+                                 inputs=[file_out, file_out2, sc_target, sc_ref, sc_ref_h, sc_ref_up],
+                                 outputs=[sc_view, sc_info])
+            sc_export_btn.click(_sc_export, inputs=[file_out, file_out2, sc_target],
+                                outputs=[sc_download, sc_info])
+
     return demo
 
 
 if __name__ == '__main__':
     import argparse
+
+    _console.install()  # capture all stdout/stderr + logging into the UI console
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, default='tencent/Hunyuan3D-2mini')
@@ -778,6 +865,9 @@ if __name__ == '__main__':
     parser.add_argument('--enable_flashvdm', action='store_true')
     parser.add_argument('--compile', action='store_true')
     parser.add_argument('--low_vram_mode', action='store_true')
+    parser.add_argument('--tex_res', type=int, default=1024,
+                        help='texture/render resolution for texture gen (default 1024; '
+                             'upstream default 2048 is ~4x slower)')
     args = parser.parse_args()
 
     SAVE_DIR = args.cache_path
@@ -815,6 +905,15 @@ if __name__ == '__main__':
             from hy3dgen.texgen import Hunyuan3DPaintPipeline
 
             texgen_worker = Hunyuan3DPaintPipeline.from_pretrained(args.texgen_model_path)
+            # Speed: drop texture/render resolution from the 2048 default. 1024 is
+            # much faster (~4x less rasterization/bake work) and still sharp.
+            if args.tex_res and args.tex_res != texgen_worker.config.render_size:
+                from hy3dgen.texgen.differentiable_renderer.mesh_render import MeshRender
+                texgen_worker.config.render_size = args.tex_res
+                texgen_worker.config.texture_size = args.tex_res
+                texgen_worker.render = MeshRender(default_resolution=args.tex_res,
+                                                  texture_size=args.tex_res)
+                print(f"[speed] texture/render resolution set to {args.tex_res}")
             if args.low_vram_mode:
                 texgen_worker.enable_model_cpu_offload()
             # Not help much, ignore for now.
